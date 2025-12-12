@@ -1,0 +1,977 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[french]{babel}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{color}
+
+\geometry{margin=2.5cm}
+
+\title{\textbf{Algorithmes Détaillés pour\\Multivariate Adaptive Regression Splines (MARS)\\Friedman (1991)}}
+\author{Implémentation PyMARS Vérifiée et Corrigée}
+\date{\today}
+
+% Commandes personnalisées
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\argmin}{\operatorname{argmin}}
+\DeclareMathOperator{\trace}{trace}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+
+Les \textit{Multivariate Adaptive Regression Splines} (MARS) constituent une méthode de régression non-paramétrique proposée par Jerome Friedman en 1991. Cette méthode combine la flexibilité du partitionnement récursif avec la continuité des fonctions splines.
+
+\subsection{Modèle MARS}
+
+Le modèle MARS s'écrit sous la forme:
+\begin{equation}
+f(\mathbf{x}) = a_0 + \sum_{m=1}^{M} a_m B_m(\mathbf{x})
+\end{equation}
+
+où:
+\begin{itemize}
+    \item $\mathbf{x} = (x_1, \ldots, x_n)$ est le vecteur des variables prédictives
+    \item $a_m$ sont les coefficients du modèle
+    \item $B_m(\mathbf{x})$ sont les fonctions de base (incluant $B_0 \equiv 1$ constant)
+    \item $M$ est le nombre de fonctions de base (déterminé automatiquement)
+\end{itemize}
+
+\subsection{Fonctions de Base}
+
+Chaque fonction de base est un produit de fonctions en charnière (\textit{hinge functions}):
+\begin{equation}
+B_m(\mathbf{x}) = \prod_{k=1}^{K_m} [s_{km}(x_{v(k,m)} - t_{km})]_+
+\end{equation}
+
+où:
+\begin{itemize}
+    \item $K_m$ est le nombre de facteurs (ordre d'interaction)
+    \item $v(k,m)$ identifie la variable impliquée
+    \item $t_{km}$ est la localisation du nœud (\textit{knot})
+    \item $s_{km} \in \{-1, +1\}$ indique la direction
+    \item $[\cdot]_+ = \max(0, \cdot)$ est la fonction partie positive
+\end{itemize}
+
+\subsection{Fonction en Charnière}
+
+La fonction en charnière (\textit{hinge function}) est définie par:
+\begin{equation}
+h(x; s, t) = [s(x - t)]_+ = 
+\begin{cases}
+s(x - t) & \text{si } s(x - t) > 0\\
+0 & \text{sinon}
+\end{cases}
+\end{equation}
+
+Pour $s = +1$ (charnière droite): $h(x; +1, t) = (x - t)_+ = \max(0, x - t)$\\
+Pour $s = -1$ (charnière gauche): $h(x; -1, t) = (t - x)_+ = \max(0, t - x)$
+
+\newpage
+
+\section{Algorithme Principal MARS}
+
+\begin{algorithm}[H]
+\caption{MARS - Algorithme Principal}
+\begin{algorithmic}[1]
+\Require Données $(X, y)$ où $X \in \R^{N \times n}$, $y \in \R^N$
+\Require Paramètres: $M_{max}$ (termes max en forward), $m_i$ (degré max), $d$ (pénalité GCV)
+\Ensure Modèle $\hat{f}(\mathbf{x})$ avec fonctions de base $\{B_m\}$ et coefficients $\{a_m\}$
+\State
+\State \textbf{Étape 1: Prétraitement}
+\State Standardiser: $X \leftarrow (X - \mu_X) / \sigma_X$
+\State Standardiser: $y \leftarrow (y - \mu_y) / \sigma_y$
+\State Calculer minspan: $L \leftarrow \lfloor -\log_2(\alpha/N) / 2.5 \rfloor$
+\State Calculer endspan: $L_e \leftarrow \lceil 3 - \log_2(\alpha/N) \rceil$
+\State
+\State \textbf{Étape 2: Phase Forward (Construction)}
+\State $\mathcal{B} \leftarrow \{\text{Forward}(X, y, M_{max}, m_i, L, L_e)\}$
+\State $\mathbf{a} \leftarrow \text{LeastSquares}(\mathcal{B}, X, y)$
+\State
+\State \textbf{Étape 3: Phase Backward (Élagage par GCV)}
+\State $(\mathcal{B}^*, \mathbf{a}^*) \leftarrow \text{Backward}(\mathcal{B}, \mathbf{a}, X, y, d)$
+\State
+\State \textbf{Étape 4: Post-traitement (Optionnel)}
+\State \If{smooth=True}
+\State $\quad (\mathcal{B}^*, \mathbf{a}^*) \leftarrow \text{ConvertToCubic}(\mathcal{B}^*, \mathbf{a}^*, X)$
+\State \EndIf
+\State Dé-standardiser: $\hat{y} \leftarrow \mathbf{a} \cdot \sigma_y + \mu_y$
+\State
+\State \Return $(\mathcal{B}^*, \mathbf{a}^*)$
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+\section{Algorithme Forward (Construction Stepwise)}
+
+\begin{algorithm}[H]
+\caption{MARS Forward - Phase de Construction Adaptative}
+\begin{algorithmic}[1]
+\Require Données $(X, y)$, $M_{max}$, $m_i$, minspan $L$, endspan $L_e$
+\Ensure Ensemble de fonctions de base $\mathcal{B}$ (sur-ajusté, $|\mathcal{B}| \approx M_{max}+1$)
+\State
+\State \textbf{Initialisation:}
+\State $\mathcal{B} \leftarrow \{B_0\}$ où $B_0(\mathbf{x}) = 1$ (terme constant)
+\State $M \leftarrow 1$ \Comment{Nombre de fonctions actuelles}
+\State
+\While{$M < M_{max} + 1$} \Comment{M=1 au départ; itérer jusqu'à M_max+1}
+    \State $\text{RSS}^* \leftarrow \infty$
+    \State $(\text{parent}, \text{var}, \text{knot}, B_L, B_R) \leftarrow \text{null}$
+    \State
+    \For{$m = 0$ \textbf{to} $M-1$} \Comment{Pour chaque fonction de base existante}
+        \State $B_{\text{parent}} \leftarrow \mathcal{B}[m]$
+        \State $\mathbf{v}_{\text{parent}} \leftarrow B_{\text{parent}}(\mathbf{x})$ \Comment{Évaluer sur X}
+        \State $\mathcal{I} \leftarrow \{i : \mathbf{v}_{\text{parent}}[i] > 10^{-10}\}$ \Comment{Support positif}
+        \State
+        \If{$|\mathcal{I}| < 2 \cdot \max(L, 1)$}
+            \State \textbf{continue} \Comment{Support trop petit}
+        \EndIf
+        \State
+        \For{$v = 1$ \textbf{to} $n$} \Comment{Pour chaque variable}
+            \If{\textbf{not} $\text{ValidateInteraction}(B_{\text{parent}}, v, m_i)$}
+                \State \textbf{continue} \Comment{Contrainte de degré}
+            \EndIf
+            \State
+            \State \textit{// Obtenir nœuds candidats sur le support}
+            \State $X_{\mathcal{I}} \leftarrow X[\mathcal{I}, :]$ \Comment{Données où parent > 0}
+            \State $\mathcal{T} \leftarrow \text{GetCandidateKnots}(X_{\mathcal{I}}, v, L)$
+            \State \textit{// Appliquer contrainte endspan}
+            \State $\mathcal{T} \leftarrow \text{ApplyEndspan}(\mathcal{T}, X_{\mathcal{I}}, L_e)$
+            \State
+            \For{$t \in \mathcal{T}$} \Comment{Pour chaque nœud candidat}
+                \State \textit{// Créer deux nouvelles fonctions de base}
+                \State $h_L \leftarrow [-(x_v - t)]_+$ \Comment{Charnière gauche}
+                \State $h_R \leftarrow [+(x_v - t)]_+$ \Comment{Charnière droite}
+                \State $B_L \leftarrow B_{\text{parent}} \cdot h_L$
+                \State $B_R \leftarrow B_{\text{parent}} \cdot h_R$
+                \State
+                \State \textit{// Évaluer amélioration RSS}
+                \State $\mathcal{B}_{\text{essai}} \leftarrow \mathcal{B} \cup \{B_L, B_R\}$
+                \State $\mathbf{a}_{\text{essai}} \leftarrow \text{LeastSquares}(\mathcal{B}_{\text{essai}}, X, y)$
+                \State $\hat{y} \leftarrow \text{Predict}(\mathcal{B}_{\text{essai}}, X, \mathbf{a}_{\text{essai}})$
+                \State $\text{RSS} \leftarrow \sum_{i=1}^{N} (y_i - \hat{y}_i)^2$
+                \State
+                \If{$\text{RSS} < \text{RSS}^*$}
+                    \State $\text{RSS}^* \leftarrow \text{RSS}$
+                    \State $(\text{parent}, \text{var}, \text{knot}) \leftarrow (m, v, t)$
+                    \State $(B_L^*, B_R^*) \leftarrow (B_L, B_R)$
+                \EndIf
+            \EndFor
+        \EndFor
+    \EndFor
+    \State
+    \If{$(\text{parent}, \text{var}, \text{knot}) = \text{null}$}
+        \State \textbf{break} \Comment{Aucune amélioration trouvée}
+    \EndIf
+    \State
+    \State \textit{// Ajouter la meilleure paire trouvée}
+    \State $\mathcal{B} \leftarrow \mathcal{B} \cup \{B_L^*, B_R^*\}$
+    \State $M \leftarrow M + 2$ \Comment{Deux nouvelles bases}
+\EndWhile
+\State
+\State \Return $\mathcal{B}$
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+\section{Algorithme Backward (Élagage par GCV)}
+
+\begin{algorithm}[H]
+\caption{MARS Backward - Élagage Itératif par Critère GCV}
+\begin{algorithmic}[1]
+\Require $\mathcal{B}$ (fonctions de base du forward), $(X, y)$, $d$ (pénalité)
+\Ensure $\mathcal{B}^*$ (fonctions optimales après élagage), $\mathbf{a}^*$ (coefficients optimaux)
+\State
+\State \textbf{Initialisation:}
+\State $\mathcal{B}_{\text{courant}} \leftarrow \mathcal{B}$
+\State $\mathbf{a}_{\text{courant}} \leftarrow \text{LeastSquares}(\mathcal{B}_{\text{courant}}, X, y)$
+\State $\text{GCV}_{\text{courant}} \leftarrow \text{CalculateGCV}(X, y, \mathcal{B}_{\text{courant}}, \mathbf{a}_{\text{courant}}, d)$
+\State
+\State \textit{// Suivi du meilleur modèle global}
+\State $\mathcal{B}^* \leftarrow \mathcal{B}_{\text{courant}}$
+\State $\mathbf{a}^* \leftarrow \mathbf{a}_{\text{courant}}$
+\State $\text{GCV}^* \leftarrow \text{GCV}_{\text{courant}}$
+\State
+\While{$|\mathcal{B}_{\text{courant}}| > 1$} \Comment{Garder au minimum: $B_0$}
+    \State $\text{GCV}_{\min} \leftarrow +\infty$
+    \State $m_{\text{retrait}} \leftarrow \text{null}$
+    \State
+    \For{$m = 1$ \textbf{to} $|\mathcal{B}_{\text{courant}}|-1$} \Comment{Ne jamais retirer $B_0$}
+        \State \textit{// Essayer retrait de $B_m$}
+        \State $\mathcal{B}_{\text{essai}} \leftarrow \mathcal{B}_{\text{courant}} \setminus \{B_m\}$
+        \State $\mathbf{a}_{\text{essai}} \leftarrow \text{LeastSquares}(\mathcal{B}_{\text{essai}}, X, y)$
+        \State $\text{GCV}_{\text{essai}} \leftarrow \text{CalculateGCV}(X, y, \mathcal{B}_{\text{essai}}, \mathbf{a}_{\text{essai}}, d)$
+        \State
+        \If{$\text{GCV}_{\text{essai}} < \text{GCV}_{\min}$}
+            \State $\text{GCV}_{\min} \leftarrow \text{GCV}_{\text{essai}}$
+            \State $m_{\text{retrait}} \leftarrow m$
+            \State $\mathcal{B}_{\text{meilleur}} \leftarrow \mathcal{B}_{\text{essai}}$
+            \State $\mathbf{a}_{\text{meilleur}} \leftarrow \mathbf{a}_{\text{essai}}$
+        \EndIf
+    \EndFor
+    \State
+    \If{$m_{\text{retrait}} = \text{null}$}
+        \State \textbf{break} \Comment{Aucun retrait améliore le GCV}
+    \EndIf
+    \State
+    \State \textit{// Mettre à jour modèle courant}
+    \State $\mathcal{B}_{\text{courant}} \leftarrow \mathcal{B}_{\text{meilleur}}$
+    \State $\mathbf{a}_{\text{courant}} \leftarrow \mathbf{a}_{\text{meilleur}}$
+    \State
+    \State \textit{// Vérifier si c'est le meilleur global}
+    \If{$\text{GCV}_{\min} < \text{GCV}^*$}
+        \State $\mathcal{B}^* \leftarrow \mathcal{B}_{\text{courant}}$
+        \State $\mathbf{a}^* \leftarrow \mathbf{a}_{\text{courant}}$
+        \State $\text{GCV}^* \leftarrow \text{GCV}_{\min}$
+    \EndIf
+\EndWhile
+\State
+\State \Return $(\mathcal{B}^*, \mathbf{a}^*)$
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+\section{Calcul du Critère GCV}
+
+\subsection{Formule GCV}
+
+Le critère de validation croisée généralisée (GCV) est défini par:
+\begin{equation}
+\text{GCV}(M) = \frac{\text{RSS}/N}{[1 - C(M)/N]^2}
+\end{equation}
+
+où:
+\begin{itemize}
+    \item $\text{RSS} = \sum_{i=1}^{N} (y_i - \hat{f}(\mathbf{x}_i))^2$ est la somme des carrés des résidus
+    \item $N$ est le nombre d'observations
+    \item $C(M)$ est le coût de complexité ajusté
+\end{itemize}
+
+\subsection{Coût de Complexité}
+
+\begin{equation}
+C(M) = \trace[B(B^T B)^{-1} B^T] + d \cdot M'
+\end{equation}
+
+où:
+\begin{itemize}
+    \item Le premier terme $\trace[B(B^T B)^{-1} B^T]$ est le nombre effectif de paramètres (rang de la matrice hat)
+    \item $M' = \max(0, M - 1)$ est le nombre de bases **non-constantes** (ne pas compter $B_0$)
+    \item $d$ est le paramètre de pénalité:
+    \begin{itemize}
+        \item $d = 2$ pour modèles additifs
+        \item $d = 3$ pour MARS général (recommandé par Friedman)
+    \end{itemize}
+\end{itemize}
+
+\begin{algorithm}[H]
+\caption{Calcul du Score GCV}
+\begin{algorithmic}[1]
+\Require $y \in \R^N$ (valeurs vraies), $\hat{y} \in \R^N$ (prédictions)
+\Require $B \in \R^{N \times M}$ (matrice design), $d$ (pénalité)
+\Ensure Score GCV
+\State
+\State \textit{// Calculer RSS}
+\State $\mathbf{r} \leftarrow y - \hat{y}$ \Comment{Résidus}
+\State $\text{RSS} \leftarrow \mathbf{r}^T \mathbf{r}$
+\State
+\State \textit{// Calculer complexité linéaire via pseudo-inverse}
+\State \Try
+    \State $B_{\text{pinv}} \leftarrow (B^T B)^{-1} B^T$ \Comment{Pseudo-inverse}
+    \State $C_{\text{linear}} \leftarrow \trace(B \times B_{\text{pinv}})$
+\Catch
+    \State \textit{// Fallback si singulier: utiliser rang SVD}
+    \State $(U, \Sigma, V^T) \leftarrow \text{SVD}(B)$
+    \State $\text{tol} \leftarrow \max(\Sigma) \times \max(N, M) \times \epsilon_{\text{machine}}$
+    \State $C_{\text{linear}} \leftarrow |\{s \in \Sigma : s > \text{tol}\}|$
+\EndTry
+\State
+\State \textit{// Pénalité pour sélection adaptative (ne pas compter $B_0$)}
+\State $M' \leftarrow \max(0, M - 1)$ \Comment{Nombres de bases non-constantes}
+\State $C_{\text{adaptive}} \leftarrow d \times M'$
+\State
+\State \textit{// Complexité totale}
+\State $C(M) \leftarrow C_{\text{linear}} + C_{\text{adaptive}}$
+\State
+\State \textit{// Vérifier singularité}
+\If{$C(M) \geq N$}
+    \State \Return $+\infty$ \Comment{Modèle trop complexe}
+\EndIf
+\State
+\State \textit{// Calculer GCV}
+\State $\text{dénominateur} \leftarrow N \times (1 - C(M)/N)^2$
+\State $\text{GCV} \leftarrow \text{RSS} / \text{dénominateur}$
+\State
+\State \Return GCV
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+\section{Régression par Moindres Carrés}
+
+\begin{algorithm}[H]
+\caption{Résoudre Régression Moindres Carrés}
+\begin{algorithmic}[1]
+\Require $\mathcal{B}$ (fonctions de base), $X \in \R^{N \times n}$, $y \in \R^N$
+\Require $\lambda$ (ridge régularisation, défaut: $10^{-10}$)
+\Ensure $\mathbf{a} \in \R^M$ (coefficients optimaux)
+\State
+\State \textit{// Construire matrice design}
+\State $B \leftarrow \text{DesignMatrix}(\mathcal{B}, X)$ \Comment{$B \in \R^{N \times M}$, colonne 0 = constant}
+\State
+\State \textit{// Centrer colonnes (excepté colonne constante)}
+\For{$j = 1$ \textbf{to} $M-1$}
+    \State $\bar{B}_{:,j} \leftarrow \frac{1}{N}\sum_{i=1}^{N} B_{i,j}$
+    \State $B_{:,j} \leftarrow B_{:,j} - \bar{B}_{:,j}$
+\EndFor
+\State
+\State \textit{// Équations normales avec ridge}
+\State $A \leftarrow B^T B + \lambda I_M$ \Comment{Matrice Gram régularisée}
+\State $\mathbf{b} \leftarrow B^T y$ \Comment{Second membre}
+\State
+\State \textit{// Résoudre par décomposition de Cholesky (rapide et stable)}
+\Try
+    \State $L \leftarrow \text{Cholesky}(A)$ \Comment{$A = LL^T$}
+    \State $\mathbf{z} \leftarrow \text{SolveTriangular}(L, \mathbf{b}, \text{lower}=\text{True})$
+    \State $\mathbf{a} \leftarrow \text{SolveTriangular}(L^T, \mathbf{z}, \text{lower}=\text{False})$
+\Catch
+    \State \textit{// Fallback 1: np.linalg.lstsq (SVD robuste)}
+    \Try
+        \State $\mathbf{a} \leftarrow \text{lstsq}(B, y)$
+    \Catch
+        \State \textit{// Fallback 2: Pseudo-inverse (plus robuste mais lent)}
+        \State $\mathbf{a} \leftarrow (B^T B)^+ B^T y$
+    \EndTry
+\EndTry
+\State
+\State \Return $\mathbf{a}$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Construction de la Matrice Design}
+
+\begin{algorithm}[H]
+\caption{Construire Matrice Design}
+\begin{algorithmic}[1]
+\Require $\mathcal{B} = \{B_0, B_1, \ldots, B_{M-1}\}$ (fonctions de base)
+\Require $X \in \R^{N \times n}$ (données d'entrée)
+\Ensure $B \in \R^{N \times M}$ (matrice design)
+\State
+\State $B \leftarrow \text{matrice}(N \times M)$ initialisée à zéro
+\State
+\For{$j = 0$ \textbf{to} $M-1$}
+    \For{$i = 1$ \textbf{to} $N$}
+        \State $B_{i,j} \leftarrow B_j(\mathbf{x}_i)$ \Comment{Évaluer base $j$ en $\mathbf{x}_i$}
+    \EndFor
+\EndFor
+\State
+\State \Return $B$
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+\section{Gestion des Contraintes et Sélection de Nœuds}
+
+\subsection{Calcul du Minspan}
+
+Le \textit{minspan} est le nombre minimum d'observations distinctes entre deux nœuds consécutifs. Cela empêche le surapprentissage sur les régions à faible densité.
+
+Formule Friedman (1991):
+\begin{equation}
+L = \left\lfloor \frac{-\log_2(\alpha/N)}{2.5} \right\rfloor
+\end{equation}
+
+où $N$ est le nombre d'observations et $\alpha$ le niveau de signification (typiquement $\alpha = 0.05$).
+
+\begin{algorithm}[H]
+\caption{Calculer Minspan}
+\begin{algorithmic}[1]
+\Require $N$ (nombre d'observations), $\alpha$ (niveau signification, défaut: 0.05)
+\Ensure minspan
+\State
+\If{$N < 10$}
+    \State \Return $0$
+\EndIf
+\State
+\State $L^* \leftarrow -\log_2(\alpha/N) / 2.5$
+\State $L \leftarrow \max(0, \lfloor L^* \rfloor)$
+\State
+\State \Return $L$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Calcul de l'Endspan}
+
+L'\textit{endspan} est le nombre minimum d'observations depuis les extrémités de la plage de données. Cela garantit que les nœuds ne sont pas placés aux queues.
+
+Formule Friedman (1991):
+\begin{equation}
+L_e = \left\lceil 3 - \log_2(\alpha/N) \right\rceil
+\end{equation}
+
+\begin{algorithm}[H]
+\caption{Calculer Endspan}
+\begin{algorithmic}[1]
+\Require $N$ (nombre d'observations), $\alpha$ (défaut: 0.05)
+\Ensure endspan
+\State
+\State $L_e^* \leftarrow 3 - \log_2(\alpha/N)$
+\State $L_e \leftarrow \max(1, \lceil L_e^* \rceil)$
+\State
+\State \Return $L_e$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Sélection des Nœuds Valides}
+
+\begin{algorithm}[H]
+\caption{Obtenir Nœuds Candidats Valides}
+\begin{algorithmic}[1]
+\Require $x \in \R^N$ (valeurs d'une variable sur le support du parent)
+\Require minspan $L$, endspan $L_e$
+\Ensure $\mathcal{T}$ (ensemble de nœuds valides)
+\State
+\State \textit{// Étape 1: Obtenir valeurs uniques triées}
+\State $x_{\text{unique}} \leftarrow \text{unique}(\text{sort}(x))$
+\State $n_{\text{unique}} \leftarrow |x_{\text{unique}}|$
+\State
+\If{$n_{\text{unique}} \leq 1$}
+    \State \Return $\emptyset$ \Comment{Pas assez de valeurs distinctes}
+\EndIf
+\State
+\State \textit{// Étape 2: Appliquer minspan (subsample de manière régulière)}
+\If{$L > 0$}
+    \State $\mathcal{T} \leftarrow \{x_{\text{unique}}[k \times L] : k = 0, 1, 2, \ldots\}$ \Comment{Indice = multiples de L}
+\Else
+    \State $\mathcal{T} \leftarrow x_{\text{unique}}$
+\EndIf
+\State
+\State \textit{// Étape 3: Appliquer endspan (retirer nœuds trop proches des extrémités)}
+\If{$L_e > 0$}
+    \State $x_{\text{lower}} \leftarrow x_{\text{unique}}[L_e - 1]$ \Comment{Indice 0-based}
+    \State $x_{\text{upper}} \leftarrow x_{\text{unique}}[n_{\text{unique}} - L_e]$
+    \State $\mathcal{T} \leftarrow \{t \in \mathcal{T} : x_{\text{lower}} < t < x_{\text{upper}}\}$
+\EndIf
+\State
+\State \Return $\mathcal{T}$
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+\section{Validation des Interactions}
+
+\begin{algorithm}[H]
+\caption{Vérifier Validité d'une Interaction}
+\begin{algorithmic}[1]
+\Require $B_{\text{parent}}$ (fonction de base parent)
+\Require $v$ (indice de variable candidate)
+\Require $m_i$ (degré d'interaction maximum)
+\Ensure \textbf{True} si interaction valide, \textbf{False} sinon
+\State
+\State \textit{// Obtenir variables présentes dans le parent}
+\State $\mathcal{V}_{\text{parent}} \leftarrow B_{\text{parent}}.\text{variables}()$
+\State
+\State \textit{// Règle 1: Pas de répétition de variable}
+\If{$v \in \mathcal{V}_{\text{parent}}$}
+    \State \Return \textbf{False}
+\EndIf
+\State
+\State \textit{// Règle 2: Respect du degré maximum}
+\State $K \leftarrow |B_{\text{parent}}.\text{hinges}()|$ \Comment{Nombre de facteurs (degré actuel)}
+\If{$K \geq m_i$}
+    \State \Return \textbf{False}
+\EndIf
+\State
+\State \Return \textbf{True}
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+\section{Prédiction}
+
+\begin{algorithm}[H]
+\caption{Prédiction MARS}
+\begin{algorithmic}[1]
+\Require $\mathcal{B}$ (fonctions de base entraînées), $\mathbf{a}$ (coefficients)
+\Require $X_{\text{test}} \in \R^{N_{\text{test}} \times n}$ (données de test)
+\Require Paramètres de standardisation: $(\mu_X, \sigma_X, \mu_y, \sigma_y)$
+\Ensure $\hat{y} \in \R^{N_{\text{test}}}$ (prédictions)
+\State
+\State \textit{// Standardiser entrées}
+\State $X_{\text{std}} \leftarrow \frac{X_{\text{test}} - \mu_X}{\sigma_X}$
+\State
+\State \textit{// Construire matrice design}
+\State $B \leftarrow \text{DesignMatrix}(\mathcal{B}, X_{\text{std}})$
+\State
+\State \textit{// Calculer prédictions standardisées}
+\State $\hat{y}_{\text{std}} \leftarrow B \mathbf{a}$
+\State
+\State \textit{// Dé-standardiser}
+\State $\hat{y} \leftarrow \hat{y}_{\text{std}} \times \sigma_y + \mu_y$
+\State
+\State \Return $\hat{y}$
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+\section{Décomposition ANOVA}
+
+La décomposition ANOVA sépare le modèle par ordre d'interaction:
+\begin{equation}
+f(\mathbf{x}) = f_0 + \sum_{i} f_i(x_i) + \sum_{i<j} f_{ij}(x_i, x_j) + \sum_{i<j<k} f_{ijk}(x_i, x_j, x_k) + \cdots
+\end{equation}
+
+où:
+\begin{itemize}
+    \item $f_0 = a_0$ est le terme constant
+    \item $f_i(x_i)$ sont les effets principaux (degré = 1)
+    \item $f_{ij}(x_i, x_j)$ sont les interactions à deux variables (degré = 2)
+    \item $f_{ijk}$ sont les interactions à trois variables (degré = 3), etc.
+\end{itemize}
+
+\begin{algorithm}[H]
+\caption{Décomposition ANOVA}
+\begin{algorithmic}[1]
+\Require $\mathcal{B}$ (fonctions de base), $\mathbf{a}$ (coefficients)
+\Ensure Décomposition ANOVA organisée par degré d'interaction
+\State
+\State \textit{// Initialiser dictionnaire par degré}
+\State $\text{ANOVA} \leftarrow \{\}$ \Comment{Clés = degré, valeurs = dict(variables → liste de bases)}
+\State
+\For{$m = 0$ \textbf{to} $|\mathcal{B}|-1$}
+    \State $B_m \leftarrow \mathcal{B}[m]$
+    \State $K \leftarrow B_m.\text{degree}()$ \Comment{Ordre d'interaction (nombre de hinges)}
+    \State $\mathcal{V} \leftarrow \text{sorted}(B_m.\text{variables}())$ \Comment{Variables impliquées}
+    \State $\mathcal{V} \leftarrow \text{tuple}(\mathcal{V})$
+    \State
+    \If{$K \notin \text{ANOVA}$}
+        \State $\text{ANOVA}[K] \leftarrow \{\}$ \Comment{Créer entrée pour ce degré}
+    \EndIf
+    \State
+    \If{$\mathcal{V} \notin \text{ANOVA}[K]$}
+        \State $\text{ANOVA}[K][\mathcal{V}] \leftarrow []$ \Comment{Créer entrée pour ce tuple de variables}
+    \EndIf
+    \State
+    \State $\text{ANOVA}[K][\mathcal{V}].\text{append}((B_m, a_m))$ \Comment{Ajouter base et coefficient}
+\EndFor
+\State
+\State \Return ANOVA
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Importance des Variables}
+
+L'importance d'une variable est la somme des valeurs absolues des coefficients de toutes les bases la contenant:
+
+\begin{equation}
+\text{Importance}(x_j) = \frac{\sum_{m: j \in \mathcal{V}(B_m)} |a_m|}{\sum_{m=1}^{M} |a_m|}
+\end{equation}
+
+où $\mathcal{V}(B_m)$ est l'ensemble des variables dans $B_m$.
+
+\begin{algorithm}[H]
+\caption{Calculer Importance des Variables}
+\begin{algorithmic}[1]
+\Require $\mathcal{B}$ (fonctions de base), $\mathbf{a}$ (coefficients), $n$ (nombre total de variables)
+\Ensure $\text{Importance} \in \R^n$ (importances normalisées, somme = 1)
+\State
+\State $\text{Importance} \leftarrow \mathbf{0}_n$ \Comment{Initialiser à zéro}
+\State
+\For{$m = 1$ \textbf{to} $|\mathcal{B}|-1$} \Comment{Itérer sauf le terme constant $B_0$}
+    \State $\mathcal{V}_m \leftarrow \mathcal{B}[m].\text{variables}()$ \Comment{Variables dans $B_m$}
+    \For{$v \in \mathcal{V}_m$}
+        \State $\text{Importance}[v] \leftarrow \text{Importance}[v] + |a_m|$
+    \EndFor
+\EndFor
+\State
+\State \textit{// Normaliser par somme totale}
+\State $S \leftarrow \sum_{j=1}^{n} \text{Importance}[j]$
+\If{$S > 0$}
+    \State $\text{Importance} \leftarrow \text{Importance} / S$
+\EndIf
+\State
+\State \Return $\text{Importance}$
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+\section{Extension: Splines Cubiques}
+
+Pour obtenir des dérivées continues ($C^1$), on peut convertir les splines linéaires par morceaux en splines cubiques.
+
+\subsection{Fonction Cubique Tronquée}
+
+Remplacer chaque $[s(x - t)]_+$ par une fonction cubique avec nœuds latéraux $t^-$ et $t^+$:
+
+\begin{equation}
+C(x; s, t^-, t, t^+) = 
+\begin{cases}
+s(x - t^-) & \text{si } x \leq t^- \\
+s \cdot r^+ \cdot (x - t^-)^3 & \text{si } t^- < x < t^+ \\
+s(x - t^+) & \text{si } x \geq t^+
+\end{cases}
+\end{equation}
+
+où le coefficient cubique est:
+\begin{equation}
+r^+ = \frac{2}{(t^+ - t^-)^3}
+\end{equation}
+
+pour assurer la continuité de la dérivée première aux points de jonction.
+
+\begin{algorithm}[H]
+\caption{Conversion en Splines Cubiques}
+\begin{algorithmic}[1]
+\Require $\mathcal{B}$ (fonctions linéaires), $\mathbf{a}$ (coefficients), $X$ (données)
+\Ensure $\mathcal{B}_{\text{cubic}}$ (fonctions cubiques), $\mathbf{a}_{\text{cubic}}$
+\State
+\State \textit{// Pour chaque fonction de base}
+\For{chaque $B_m \in \mathcal{B}$}
+    \For{chaque hinge dans $B_m$}
+        \State $(v, t, s) \leftarrow$ variable, nœud central, direction de ce hinge
+        \State
+        \State \textit{// Collecter tous les nœuds sur cette variable}
+        \State $\mathcal{T}_v \leftarrow \{\text{tous les nœuds centraux sur variable } v\}$
+        \State $\mathcal{T}_v \leftarrow \text{sorted}(\mathcal{T}_v)$
+        \State $\text{idx} \leftarrow \text{index\_of}(t, \mathcal{T}_v)$
+        \State
+        \State \textit{// Placer nœuds latéraux par midpoint}
+        \If{$\text{idx} = 0$}
+            \State $t^- \leftarrow \frac{\min(X_{:,v}) + t}{2}$
+        \Else
+            \State $t^- \leftarrow \frac{\mathcal{T}_v[\text{idx}-1] + t}{2}$
+        \EndIf
+        \State
+        \If{$\text{idx} = |\mathcal{T}_v|-1$}
+            \State $t^+ \leftarrow \frac{t + \max(X_{:,v})}{2}$
+        \Else
+            \State $t^+ \leftarrow \frac{t + \mathcal{T}_v[\text{idx}+1]}{2}$
+        \EndIf
+        \State
+        \State \textit{// Remplacer hinge linéaire par fonction cubique}
+        \State Remplacer facteur par $C(x; s, t^-, t, t^+)$
+    \EndFor
+\EndFor
+\State
+\State \textit{// Réajuster les coefficients avec la nouvelle matrice design}
+\State $B_{\text{cubic}} \leftarrow \text{DesignMatrix}(\mathcal{B}_{\text{cubic}}, X)$
+\State $\mathbf{a}_{\text{cubic}} \leftarrow \text{LeastSquares}(B_{\text{cubic}}, y)$
+\State
+\State \Return $(\mathcal{B}_{\text{cubic}}, \mathbf{a}_{\text{cubic}})$
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+\section{Complexité Algorithmique}
+
+\subsection{Analyse Phase Forward}
+
+Chaque itération de la boucle forward considère:
+\begin{itemize}
+    \item Chaque fonction de base actuelle: $\sim M$ fonctions
+    \item Chaque variable: $n$ variables
+    \item Nœuds candidats après minspan: $\sim N/L$ nœuds
+    \item Ajustement moindres carrés: $\mathcal{O}(NM^2 + M^3)$
+\end{itemize}
+
+Nombre total d'itérations: $\sim M_{max}$
+
+Complexité totale phase forward:
+\begin{equation}
+\mathcal{O}(M_{max} \times M \times n \times (N/L) \times (NM^2))
+\approx \mathcal{O}(n \times N \times M_{max}^4 / L)
+\end{equation}
+
+En pratique, avec optimisations (mises à jour rapides), le coût est:
+\begin{equation}
+\mathcal{O}(n \times N \times M_{max}^2)
+\end{equation}
+
+\subsection{Analyse Phase Backward}
+
+Chaque itération teste le retrait de $M$ fonctions:
+\begin{itemize}
+    \item Réajuster le modèle: $\mathcal{O}(NM^2 + M^3)$ par retrait
+    \item Calculer GCV: $\mathcal{O}(NM)$
+\end{itemize}
+
+Nombre d'itérations: $\sim M_{max}$
+
+Complexité phase backward:
+\begin{equation}
+\mathcal{O}(M_{max}^2 \times (NM_{max}^2 + M_{max}^3)) \approx \mathcal{O}(N \times M_{max}^4)
+\end{equation}
+
+\subsection{Complexité Totale}
+
+\begin{equation}
+\text{Total} = \mathcal{O}(n \times N \times M_{max}^2) + \mathcal{O}(N \times M_{max}^4)
+\end{equation}
+
+Pour les cas pratiques:
+\begin{itemize}
+    \item Si $M_{max} \ll n$: Forward domine (linéaire en $n$)
+    \item Si $M_{max} \sim \sqrt{n}$: Backward domine (quartique en $M_{max}$)
+\end{itemize}
+
+\section{Recommandations Pratiques}
+
+\subsection{Choix des Hyperparamètres}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|l|}
+\hline
+\textbf{Paramètre} & \textbf{Défaut} & \textbf{Recommandation} \\
+\hline
+$M_{max}$ & 30 & $2 \times (\text{nombre d'effets estimés})$ \\
+$m_i$ (degré max) & 1 & 1 (additif), 2 (interactions bidimensionnelles) \\
+$d$ (pénalité GCV) & 3 & 2 (additif), 3 (général) \\
+$\alpha$ (signification) & 0.05 & 0.01-0.10 selon conservatisme \\
+minspan & auto & Friedman formula \\
+endspan & auto & Friedman formula \\
+smooth & False & True pour splines cubiques \\
+standardize & True & Recommandé pour stabilité numérique \\
+verbose & True & False pour traitement par lot \\
+\hline
+\end{tabular}
+\caption{Hyperparamètres recommandés}
+\end{table}
+
+\subsection{Quand Utiliser MARS}
+
+\begin{itemize}
+    \item \textbf{Nombre de variables}: $3 \leq n \leq 20$ (taille modérée)
+    \item \textbf{Taille échantillon}: $50 \leq N \leq 1000$
+    \item \textbf{Forme fonctionnelle}: Non linéaire ou inconnue
+    \item \textbf{Interactions}: Possibles mais peu nombreuses
+    \item \textbf{Interprétabilité}: Très importante
+    \item \textbf{Continuité}: Requise (ou lissage)
+\end{itemize}
+
+\subsection{Alternatives à MARS}
+
+\begin{itemize}
+    \item $N < 50$: Régression linéaire avec sélection de variables
+    \item $n > 50$ et $N$ petit: Regularisation (Ridge, Lasso, Elastic Net)
+    \item $n > 50$ et $N$ grand: Random Forests, Gradient Boosting
+    \item Prédiction pure (peu d'interprétabilité): Deep Learning
+    \item Séries temporelles: ARIMA, LSTM
+\end{itemize}
+
+\newpage
+
+\section{Exemple Numérique Complet}
+
+Considérons un exemple simple avec $N = 5$ observations et $n = 2$ variables.
+
+\subsection{Données}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|c|c|c|}
+\hline
+$i$ & $(x_1, x_2)$ & $y$ \\
+\hline
+1 & (0.0, 0.0) & 1.0 \\
+2 & (0.5, 0.3) & 2.5 \\
+3 & (1.0, 0.6) & 4.0 \\
+4 & (1.5, 0.9) & 5.5 \\
+5 & (2.0, 1.2) & 7.0 \\
+\hline
+\end{tabular}
+\caption{Données exemple}
+\end{table}
+
+\subsection{Itération 1: Initialisation}
+
+$\mathcal{B} = \{B_0\}$ où $B_0(\mathbf{x}) = 1$
+
+Matrice design: $B = \begin{bmatrix} 1 \\ 1 \\ 1 \\ 1 \\ 1 \end{bmatrix}^T$
+
+Coefficient: $a_0 = \bar{y} = 4.0$
+
+RSS initial: $\text{RSS}_0 = \sum_{i=1}^{5}(y_i - 4.0)^2 = 18.0$
+
+\subsection{Itération 2: Première Paire de Splits}
+
+Tester tous les splits possibles. Exemple pour variable $x_1$, nœud $t = 0.5$:
+\begin{align*}
+B_1 &= [-(x_1 - 0.5)]_+ = [0.5, 0.0, 0.0, 0.0, 0.0]^T \\
+B_2 &= [+(x_1 - 0.5)]_+ = [0.0, 0.0, 0.5, 1.0, 1.5]^T
+\end{align*}
+
+Regression sur $\{B_0, B_1, B_2\}$ donne les coefficients optimaux qui minimisent RSS.
+
+\subsection{Phase Backward}
+
+Évaluer GCV pour chaque modèle obtenu en retirant une fonction. Sélectionner celui avec meilleur GCV.
+
+\subsection{Modèle Final}
+
+Après backward, supposons que le modèle optimal soit:
+\begin{equation}
+\hat{f}(\mathbf{x}) = a_0 + a_1 B_1(\mathbf{x}) + a_2 B_2(\mathbf{x})
+\end{equation}
+
+avec les coefficients optimisés après les deux phases.
+
+\newpage
+
+\section{Implémentation Python}
+
+\begin{verbatim}
+from pymars import MARS
+import numpy as np
+
+# Générer données synthétiques
+X = np.random.randn(200, 5)
+y = X[:, 0]**2 + 2*X[:, 1] + 0.5*X[:, 2]*X[:, 3] + np.random.randn(200)*0.5
+
+# Initialiser MARS
+model = MARS(
+    max_terms=30,      # Maximum de bases en forward
+    max_degree=2,      # Interactions bidimensionnelles
+    penalty=3.0,       # Pénalité GCV
+    minspan='auto',    # Minspan automatique
+    endspan='auto',    # Endspan automatique
+    standardize=True,  # Standardiser les données
+    verbose=True       # Afficher progression
+)
+
+# Entraîner le modèle
+model.fit(X, y)
+
+# Faire des prédictions
+y_pred = model.predict(X)
+
+# Accéder aux résultats
+print(f"Nombre de bases: {len(model.basis_functions_)}")
+print(f"GCV score: {model.gcv_score_:.6f}")
+print(f"Importances: {model.feature_importances_}")
+
+# Affichage résumé
+model.summary()
+
+# Décomposition ANOVA
+anova = model.anova_decomposition()
+
+# Conversion en cubique (optionnel)
+model_cubic = MARS(smooth=True)
+model_cubic.fit(X, y)
+\end{verbatim}
+
+\newpage
+
+\section{Références}
+
+\begin{enumerate}
+    \item \textbf{Friedman, J. H. (1991)}. Multivariate Adaptive Regression Splines. \textit{The Annals of Statistics}, 19(1), 1-67.
+    
+    \item \textbf{Friedman, J. H., \& Silverman, B. W. (1989)}. Flexible Parsimonious Smoothing and Additive Modeling. \textit{Technometrics}, 31(1), 3-21.
+    
+    \item \textbf{Hastie, T., Tibshirani, R., \& Friedman, J. (2009)}. \textit{The Elements of Statistical Learning} (2nd ed.). Springer. Chapitre 9: Additive Models, Trees, and Related Methods.
+    
+    \item \textbf{De Boor, C. (1978)}. \textit{A Practical Guide to Splines}. Springer-Verlag.
+    
+    \item \textbf{Craven, P., \& Wahba, G. (1979)}. Smoothing noisy data with spline functions. \textit{Numerische Mathematik}, 31, 377-403.
+\end{enumerate}
+
+\section{Notation Récapitulative}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Symbole} & \textbf{Signification} \\
+\hline
+$N$ & Nombre d'observations d'entraînement \\
+$n$ & Nombre de variables prédictives \\
+$M$ & Nombre de fonctions de base (courant) \\
+$M_{max}$ & Nombre maximum de bases en phase forward \\
+$m_i$ & Degré d'interaction maximum \\
+$\mathbf{x}_i \in \R^n$ & $i$-ème observation \\
+$y_i \in \R$ & $i$-ème valeur de réponse \\
+$X \in \R^{N \times n}$ & Matrice de données (toutes observations) \\
+$y \in \R^N$ & Vecteur de réponses \\
+$B_m(\mathbf{x})$ & $m$-ème fonction de base (MARS) \\
+$B_0(\mathbf{x}) = 1$ & Terme constant \\
+$a_m$ & Coefficient de la $m$-ème fonction de base \\
+$K_m$ & Nombre de facteurs (hinges) dans $B_m$ \\
+$v(k,m)$ & Indice de variable du $k$-ème facteur de $B_m$ \\
+$t_{km}$ & Nœud (knot) du $k$-ème facteur de $B_m$ \\
+$s_{km} \in \{-1, +1\}$ & Direction du $k$-ème facteur \\
+$[\cdot]_+ = \max(0, \cdot)$ & Fonction partie positive \\
+$B \in \R^{N \times M}$ & Matrice design \\
+$B_{i,j}$ & Élément (i,j) de la matrice design \\
+RSS & Résidu Sum of Squares: $\sum_i (y_i - \hat{y}_i)^2$ \\
+GCV & Generalized Cross-Validation score \\
+$C(M)$ & Coût de complexité \\
+$d$ & Paramètre de pénalité pour adaptation \\
+$\alpha$ & Niveau de signification pour minspan/endspan \\
+$L$ & Minspan: espacement minimum \\
+$L_e$ & Endspan: observations depuis extrémités \\
+$\hat{f}(\mathbf{x})$ & Fonction estimée par MARS \\
+$\mu_X, \sigma_X$ & Moyennes et écarts-types des features \\
+$\mu_y, \sigma_y$ & Moyenne et écart-type de la réponse \\
+\hline
+\end{tabular}
+\caption{Table de notation complète}
+\end{table}
+
+\newpage
+
+\section{Conclusion}
+
+Les algorithmes MARS présentés ici constituent une implémentation complète et fidèle de la méthode proposée par Friedman (1991), validée contre le code PyMARS. Les **points clés** sont:
+
+\begin{enumerate}
+    \item \textbf{Construction adaptative}: Les fonctions de base sont sélectionnées automatiquement en fonction des données par minimisation du RSS
+    \item \textbf{Continuité}: Utilisation de fonctions en charnière $[s(x-t)]_+$ pour assurer la continuité $C^0$ (extension cubique pour $C^1$)
+    \item \textbf{Interprétabilité}: Décomposition ANOVA permettant d'isoler effets principaux et interactions
+    \item \textbf{Sélection de modèle}: Critère GCV avec pénalité adaptée pour équilibrer ajustement et complexité
+    \item \textbf{Efficacité}: Phase forward $\mathcal{O}(nNM_{max}^2)$ et backward $\mathcal{O}(NM_{max}^4)$
+\end{enumerate}
+
+\subsection{Correctifs Apportés au Document Original}
+
+Les corrections suivantes ont été appliquées pour assurer la compatibilité avec l'implémentation PyMARS et Friedman 1991:
+
+\begin{itemize}
+    \item **Algorithme Forward**: Condition While corrigée de $M < M_{max}$ à $M < M_{max}+1$ (comptage des bases non-constantes)
+    \item **GCV**: Formule de complexité clarifiée avec $M' = \max(0, M-1)$ (ignorer terme constant)
+    \item **Backward**: Ajout du suivi global du meilleur modèle
+    \item **Endspan**: Application correcte comme filtrage des nœuds, pas comme contrainte de construction
+    \item **Minspan/Endspan**: Clarification que ces paramètres contrôlent la sélection de nœuds, pas la construction de paires
+    \item **Design Matrix**: Centrage des colonnes non-constantes pour la stabilité numérique
+    \item **Least Squares**: Chaîne de fallback complète (lstsq → Cholesky → pseudo-inverse)
+\end{itemize}
+
+Cette documentation sert de référence pour:
+\begin{itemize}
+    \item Comprendre l'algorithme MARS complet de Friedman 1991
+    \item Implémenter MARS correctement
+    \item Valider les implémentations existantes
+    \item Enseigner les splines adaptatives multivariées
+\end{itemize}
+
+\end{document}

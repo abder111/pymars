@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pymars"
+version = "0.1.0"
+description = "Pure Python implementation of Multivariate Adaptive Regression Splines (MARS)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+keywords = ["mars", "regression", "splines", "machine-learning", "nonparametric"]
+authors = [
+    {name = "ES-SAFI ABDERRAHMAN", email = "abderrahman@example.com"},
+    {name = "LAMGHARI YASSINE", email = "yassine@example.com"},
+    {name = "CHAIBOU SAIDOU ABDOUYE", email = "abdouye@example.com"}
+]
+maintainers = [
+    {name = "ES-SAFI ABDERRAHMAN", email = "abderrahman@example.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
+
+dependencies = [
+    "numpy>=1.19.0",
+    "scipy>=1.5.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=22.0.0",
+    "flake8>=5.0.0",
+    "mypy>=0.990"
+]
+plot = [
+    "matplotlib>=3.3.0"
+]
+docs = [
+    "sphinx>=4.0.0",
+    "sphinx-rtd-theme>=1.0.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/abder111/pymars"
+Documentation = "https://pymars.readthedocs.io"
+Repository = "https://github.com/abder111/pymars"
+"Bug Tracker" = "https://github.com/abder111/pymars/issues"
+
+[tool.setuptools]
+packages = ["pymars"]
+
+[tool.setuptools.package-data]
+pymars = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+include = '\.pyi?$'
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false

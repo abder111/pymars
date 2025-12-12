@@ -1,0 +1,31 @@
+# Read the Docs configuration file
+# https://docs.readthedocs.io/en/stable/config-file/v2/
+
+version: 2
+
+# Build documentation in the docs/ directory with Sphinx
+sphinx:
+  configuration: docs/conf.py
+  fail_on_warning: false
+
+# Python version and dependencies
+python:
+  version: "3.9"
+  install:
+    - method: pip
+      path: .
+    - requirements: docs/requirements.txt
+
+# Build documentation on these events
+build:
+  os: ubuntu-20.04
+  tools:
+    python: "3.9"
+
+# Formats to build
+formats:
+  - pdf
+  - epub
+
+# Redirects (for future refactoring)
+redirects: {}
